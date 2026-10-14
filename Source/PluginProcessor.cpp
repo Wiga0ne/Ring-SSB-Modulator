@@ -83,9 +83,9 @@ void RingProcessor::prepareToPlay (double sampleRate, int)
             c.p2[k].a2 = (float) (hA2[k] * hA2[k]);
         }
     }
-    freqSm.reset (sr, 0.02);  freqSm.setCurrentAndSetTargetValue (500.0f);
-    blendSm.reset (sr, 0.02); blendSm.setCurrentAndSetTargetValue (1.0f);
-    cutSm.reset (sr, 0.02);   cutSm.setCurrentAndSetTargetValue (20000.0f);
+   freqSm.reset (sr, 0.02);  freqSm.setCurrentAndTargetValue (500.0f);
+   blendSm.reset (sr, 0.02); blendSm.setCurrentAndTargetValue (1.0f);
+   cutSm.reset (sr, 0.02);   cutSm.setCurrentAndTargetValue (20000.0f);
 }
 
 void RingProcessor::processBlock (juce::AudioBuffer<float>& buf, juce::MidiBuffer&)
