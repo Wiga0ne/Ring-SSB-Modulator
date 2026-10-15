@@ -9,7 +9,7 @@ FetchContent_Declare(JUCE
 FetchContent_MakeAvailable(JUCE)
 
 # the pedal picture is embedded into the plugin (no external file needed at runtime)
-juce_add_binary_data(RingAssets SOURCES background.png)
+juce_add_binary_data(RingAssets SOURCES background.png pitchshift_white.png pitchshift_yellow.png)
 
 juce_add_plugin(RingThingSSB
   COMPANY_NAME "Wiga"

@@ -9,7 +9,8 @@ namespace
     constexpr float kKnobY = 181.0f, kKnobR = 60.0f;
     constexpr float kBigX = 892.0f, kBigY = 179.0f;
     constexpr float kLadderX = 657.0f, kLadderY0 = 309.0f, kLadderDY = 34.5f;
-    const juce::Colour kOrange (0xffff9a1a), kRed (0xffff2a2a), kBtnOrange (0xfff95527);
+    const juce::Colour kOrange (0xffff9a1a), kRed (0xffff2a2a), kBtnOrange (0xfff95527), kYellow (0xffffd600);
+    const float kScales[4] = { 0.25f, 0.5f, 0.75f, 1.0f };
 
     void drawLed (juce::Graphics& g, float cx, float cy, float r, bool lit, juce::Colour c)
     {
@@ -36,6 +37,23 @@ namespace
         }
     }
 }
+
+static void addSizeSubmenu (juce::PopupMenu&, juce::Component&);
+static void handleSizeChoice (int, juce::Component*);
+static void showSizeMenuFor (juce::Component&);
+
+// knob that lets a right click open the size menu instead of dragging
+struct PedalSlider : juce::Slider
+{
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        passThrough = e.mods.isPopupMenu();
+        if (passThrough) showSizeMenuFor (*this); else juce::Slider::mouseDown (e);
+    }
+    void mouseDrag (const juce::MouseEvent& e) override { if (! passThrough) juce::Slider::mouseDrag (e); }
+    void mouseUp (const juce::MouseEvent& e) override   { if (! passThrough) juce::Slider::mouseUp (e); passThrough = false; }
+    bool passThrough = false;
+};
 
 // ------------------------------------------------------------------ knob look
 struct PedalKnobLNF : juce::LookAndFeel_V4
@@ -140,6 +158,7 @@ private:
         m.addSeparator();
         m.addItem (4, "Unload preset (live knob positions)", slot > 0);
         m.addItem (5, "Next mode combination (same as pushing the knob)");
+        addSizeSubmenu (m, *this);
         juce::Component::SafePointer<BigKnob> sp (this);
         m.showMenuAsync (juce::PopupMenu::Options(), [sp] (int r) {
             if (sp == nullptr) return;
@@ -149,6 +168,7 @@ private:
             else if (r == 3) p.restoreAllFactory();
             else if (r == 4) p.loadPreset (0);
             else if (r == 5) p.cycleModes();
+            else handleSizeChoice (r, sp.getComponent());
         });
     }
 
@@ -163,8 +183,9 @@ class ToggleZone : public juce::Component
 {
 public:
     ToggleZone (RingProcessor& p, const char* paramId) : proc (p), id (paramId) {}
-    void mouseDown (const juce::MouseEvent&) override
+    void mouseDown (const juce::MouseEvent& e) override
     {
+        if (e.mods.isPopupMenu()) { showSizeMenuFor (*this); return; }
         const float cur = proc.apvts.getRawParameterValue (id)->load();
         setParamGesture (proc.apvts, id, cur > 0.5f ? 0.0f : 1.0f, true, true);
     }
@@ -179,6 +200,7 @@ public:
     explicit LadderZone (RingProcessor& p) : proc (p) {}
     void mouseDown (const juce::MouseEvent& e) override
     {
+        if (e.mods.isPopupMenu()) { showSizeMenuFor (*this); return; }
         const int row = (int) ((e.y) / kLadderDY);
         proc.loadPreset (juce::jlimit (1, 9, row + 1));
     }
@@ -192,6 +214,10 @@ class Footswitch : public juce::Component
 {
 public:
     Footswitch (RingProcessor& p, bool presetSwitch) : proc (p), isPreset (presetSwitch) {}
+    ~Footswitch() override
+    {
+        if (down && isPreset) setParamGesture (proc.apvts, "presetfsw", 0.0f, false, true);   // never leave the switch stuck
+    }
 
     void paint (juce::Graphics& g) override
     {
@@ -256,6 +282,10 @@ private:
         m.addItem (2, "Clear MIDI assignment", desc.isNotEmpty());
         m.addSeparator();
         m.addItem (3, desc.isNotEmpty() ? "Assigned to: " + desc : "No MIDI assignment", false);
+        if (proc.getLearnTarget() == target()) m.addItem (5, "Cancel MIDI learn");
+        if (! isPreset) m.addItem (6, "Latching MIDI switch (toggle on press AND release)", true, proc.isBypassLatching());
+        m.addItem (7, "MIDI Program Change 1-9 also selects presets (0 = live knobs)", false);
+        addSizeSubmenu (m, *this);
         m.addItem (4, "Tip: in your DAW you can also map the automatable parameter \""
                           + juce::String (isPreset ? "Preset/Tune Footswitch" : "Effect On (Bypass switch)") + "\"", false);
         juce::Component::SafePointer<Footswitch> sp (this);
@@ -263,6 +293,9 @@ private:
             if (sp == nullptr) return;
             if (r == 1) sp->proc.startMidiLearn (sp->target());
             if (r == 2) sp->proc.clearMidi (sp->target());
+            if (r == 5) sp->proc.cancelMidiLearn();
+            if (r == 6) sp->proc.setBypassLatching (! sp->proc.isBypassLatching());
+            handleSizeChoice (r, sp.getComponent());
         });
     }
 
@@ -275,10 +308,12 @@ class PedalContent : public juce::Component, private juce::Timer
 {
 public:
     explicit PedalContent (RingProcessor& p)
-        : proc (p), bigKnob (p), rmZone (p, "rm"), ubZone (p, "ub"), lbZone (p, "lb"), psZone (p, "ps"),
+        : proc (p), bigKnob (p), rmZone (p, "rm"), ubZone (p, "ub"), lbZone (p, "lb"), psZone (p, "ps"), phZone (p, "ph"),
           ladder (p), presetSw (p, true), bypassSw (p, false)
     {
         bg = juce::ImageCache::getFromMemory (BinaryData::background_png, BinaryData::background_pngSize);
+        psWhite  = juce::ImageCache::getFromMemory (BinaryData::pitchshift_white_png,  BinaryData::pitchshift_white_pngSize);
+        psYellow = juce::ImageCache::getFromMemory (BinaryData::pitchshift_yellow_png, BinaryData::pitchshift_yellow_pngSize);
         setSize (kW, kH);
 
         juce::Slider* ks[5] = { &blend, &wave, &filter, &fine, &coarse };
@@ -302,6 +337,7 @@ public:
         addAndMakeVisible (ubZone);   ubZone.setBounds (873, 253, 38, 85);
         addAndMakeVisible (lbZone);   lbZone.setBounds (914, 253, 40, 85);
         addAndMakeVisible (psZone);   psZone.setBounds (830, 354, 126, 24);
+        addAndMakeVisible (phZone);   phZone.setBounds (690, 28, 104, 24);
         addAndMakeVisible (ladder);   ladder.setBounds (622, (int) (kLadderY0 - kLadderDY / 2), 194, (int) (kLadderDY * 9));
         addAndMakeVisible (presetSw); presetSw.setBounds (118, 638, 124, 110);
         addAndMakeVisible (bypassSw); bypassSw.setBounds (753, 638, 124, 110);
@@ -311,6 +347,11 @@ public:
     ~PedalContent() override
     {
         for (auto* s : { &blend, &wave, &filter, &fine, &coarse }) s->setLookAndFeel (nullptr);
+    }
+
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        if (e.mods.isPopupMenu()) showSizeMenuFor (*this);
     }
 
     void paint (juce::Graphics& g) override
@@ -344,13 +385,19 @@ public:
             }
             drawLed (g, b.ledX, b.ledY, 10.0f, on, kOrange);
         }
-        if (modes & kPS)
-        {
-            g.setColour (kOrange.withAlpha (0.25f));
-            g.fillRoundedRectangle (832.0f, 354.0f, 122.0f, 24.0f, 5.0f);
-            g.setColour (kOrange);
-            g.drawRoundedRectangle (832.0f, 354.0f, 122.0f, 24.0f, 5.0f, 2.0f);
-        }
+        // PITCH-SHIFT label: yellow = on, white = off (the label lives in two sprites, not in the background)
+        g.drawImageAt ((modes & kPS) ? psYellow : psWhite, 829, 356);
+
+        // PHASER switch (top right of the body): LED + label, yellow when on
+        const bool phOn = (modes & kPH) != 0;
+        g.setColour (juce::Colours::black.withAlpha (0.55f));
+        g.fillRoundedRectangle (690.0f, 28.0f, 104.0f, 24.0f, 6.0f);
+        g.setColour (juce::Colours::white.withAlpha (0.35f));
+        g.drawRoundedRectangle (690.5f, 28.5f, 103.0f, 23.0f, 6.0f, 1.0f);
+        drawLed (g, 704.0f, 40.0f, 5.5f, phOn, kOrange);
+        g.setColour (phOn ? kYellow : juce::Colours::white);
+        g.setFont (juce::Font (juce::FontOptions (14.0f, juce::Font::bold)));
+        g.drawText ("PHASER", juce::Rectangle<float> (714.0f, 28.0f, 76.0f, 24.0f), juce::Justification::centred);
 
         // preset ladder LEDs
         for (int i = 0; i < 9; ++i)
@@ -384,10 +431,11 @@ private:
     RingProcessor& proc;
     juce::Image bg;
     PedalKnobLNF lnf;
-    juce::Slider blend, wave, filter, fine, coarse;
+    PedalSlider blend, wave, filter, fine, coarse;
     std::vector<std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment>> attachments;
+    juce::Image psWhite, psYellow;
     BigKnob bigKnob;
-    ToggleZone rmZone, ubZone, lbZone, psZone;
+    ToggleZone rmZone, ubZone, lbZone, psZone, phZone;
     LadderZone ladder;
     Footswitch presetSw, bypassSw;
 };
@@ -398,9 +446,9 @@ RingEditor::RingEditor (RingProcessor& p) : AudioProcessorEditor (&p), proc (p)
     content = std::make_unique<PedalContent> (proc);
     addAndMakeVisible (*content);
     setResizable (true, true);
-    setResizeLimits (500, 414, 1500, 1242);
+    setResizeLimits (kW / 4, kH / 4, 1500, 1242);
     getConstrainer()->setFixedAspectRatio ((double) kW / (double) kH);
-    setSize (800, 662);
+    setScaleIndex (juce::jlimit (0, 3, proc.uiScaleIdx.load()));   // default: smallest size (25 %)
 }
 
 RingEditor::~RingEditor() = default;
@@ -410,4 +458,47 @@ void RingEditor::resized()
     const float s = (float) getWidth() / (float) kW;
     content->setTransform (juce::AffineTransform::scale (s));
     content->setBounds (0, 0, kW, kH);
+}
+
+int RingEditor::getScaleIndex() const
+{
+    const float s = (float) getWidth() / (float) kW;
+    for (int i = 0; i < 4; ++i) if (std::abs (s - kScales[i]) < 0.02f) return i;
+    return -1;
+}
+
+void RingEditor::setScaleIndex (int idx)
+{
+    idx = juce::jlimit (0, 3, idx);
+    proc.uiScaleIdx = idx;
+    setSize ((int) std::lround (kW * kScales[idx]), (int) std::lround (kH * kScales[idx]));
+}
+
+static void addSizeSubmenu (juce::PopupMenu& m, juce::Component& c)
+{
+    const auto* ed = c.findParentComponentOfClass<RingEditor>();
+    const int cur = ed != nullptr ? ed->getScaleIndex() : -1;
+    const char* names[4] = { "25 %", "50 %", "75 %", "100 %" };
+    juce::PopupMenu sub;
+    for (int i = 0; i < 4; ++i) sub.addItem (101 + i, names[i], true, i == cur);
+    m.addSeparator();
+    m.addSubMenu ("Plugin size", sub);
+}
+
+static void handleSizeChoice (int r, juce::Component* c)
+{
+    if (c == nullptr || r < 101 || r > 104) return;
+    if (auto* ed = c->findParentComponentOfClass<RingEditor>()) ed->setScaleIndex (r - 101);
+}
+
+static void showSizeMenuFor (juce::Component& c)
+{
+    const auto* ed = c.findParentComponentOfClass<RingEditor>();
+    const int cur = ed != nullptr ? ed->getScaleIndex() : -1;
+    const char* names[4] = { "25 %", "50 %", "75 %", "100 %" };
+    juce::PopupMenu m;
+    m.addSectionHeader ("Plugin size");
+    for (int i = 0; i < 4; ++i) m.addItem (101 + i, names[i], true, i == cur);
+    juce::Component::SafePointer<juce::Component> sp (&c);
+    m.showMenuAsync (juce::PopupMenu::Options(), [sp] (int r) { handleSizeChoice (r, sp.getComponent()); });
 }

@@ -3,7 +3,7 @@
 #include <atomic>
 #include <vector>
 
-enum ModeBits { kRM = 1, kUB = 2, kLB = 4, kPS = 8 };
+enum ModeBits { kRM = 1, kUB = 2, kLB = 4, kPS = 8, kPH = 16 };
 enum class MidiTarget { None = 0, PresetFsw = 1, Bypass = 2 };
 
 struct PresetData
@@ -62,6 +62,10 @@ public:
     bool  isTunedActive() const { return tunedActive.load(); }
     float getTunedHz() const { return tunedHz.load(); }
     void startMidiLearn (MidiTarget t) { learnTarget = (int) t; }
+    void cancelMidiLearn() { learnTarget = 0; }
+    bool isBypassLatching() const { return bypassLatching.load(); }
+    void setBypassLatching (bool b) { bypassLatching = b; }
+    std::atomic<int> uiScaleIdx { 0 };
     MidiTarget getLearnTarget() const { return (MidiTarget) learnTarget.load(); }
     void clearMidi (MidiTarget t);
     juce::String getMidiDescription (MidiTarget t) const;
@@ -83,7 +87,7 @@ private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
     void parameterChanged (const juce::String&, float) override;
     void handleAsyncUpdate() override;
-    void handleMidi (juce::MidiBuffer&);
+    bool handleMidi (juce::MidiBuffer&);   // returns true if a PRESET/TUNE press arrived in this block
     float detectPitch();
     void applyPresetData (const PresetData&);
     PresetData captureCurrent() const;
@@ -103,7 +107,7 @@ private:
     std::vector<float> tuneBuf, tuneWork, yinD;
     int tuneWrite = 0, tuneCounter = 0;
 
-    std::atomic<float> *pBlend, *pWave, *pFilter, *pFine, *pCoarse, *pRM, *pUB, *pLB, *pPS, *pActive, *pFsw, *pPreset;
+    std::atomic<float> *pBlend, *pWave, *pFilter, *pFine, *pCoarse, *pRM, *pUB, *pLB, *pPS, *pPH, *pActive, *pFsw, *pPreset;
 
     bool prevDown = false;
     double holdSamples = 0.0;
@@ -111,7 +115,10 @@ private:
     std::atomic<float> tunedHz { 0.f };
     float tunedCoarse = 0.f, tunedFine = 0.f;
 
-    std::atomic<bool> midiPresetDown { false }, midiBypassHeld { false };
+    std::atomic<bool> midiPresetDown { false }, midiBypassHeld { false }, bypassLatching { false };
+    float phS[2][6] = {};
+    float phFb[2] = { 0.f, 0.f };
+    float phLfoPhase = 0.f;
     std::atomic<int> learnTarget { 0 }, ccPreset { -1 }, notePreset { -1 }, ccBypass { -1 }, noteBypass { -1 };
 
     std::atomic<bool> pendingNext { false }, pendingToggle { false };

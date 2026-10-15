@@ -5,6 +5,8 @@
     PluginProcessor.h / PluginProcessor.cpp
     PluginEditor.h / PluginEditor.cpp
     background.png
+    pitchshift_white.png
+    pitchshift_yellow.png
     .github/workflows/build.yml
 
 ## Get the .vst3

@@ -42,7 +42,7 @@ namespace
 }
 
 const char* const RingProcessor::factoryNames[9] = {
-    "Ring Mod", "Tremolo", "Ring Vibe", "Detune", "Chorus", "Vibrato", "Sub Octave", "Octave Up", "Rotary Thing" };
+    "Ring Mod", "Tremolo", "Ring Vibe", "Detune", "Chorus", "Vibrato", "Sub Octave", "Octave Up", "Phaser" };
 
 PresetData RingProcessor::factoryPreset (int i)
 {
@@ -56,7 +56,7 @@ PresetData RingProcessor::factoryPreset (int i)
         { 1.00f, 0.25f, 0.50f, 0.25f, 0.50f, kPS, 0.0f },   // Vibrato
         { 0.60f, 0.25f, 0.00f, 0.50f, 0.25f, kPS, 0.0f },   // Sub Octave (-12 st)
         { 0.50f, 0.25f, 0.00f, 0.50f, 0.75f, kPS, 0.0f },   // Octave Up (+12 st)
-        { 0.70f, 0.25f, 0.50f, 0.35f, 0.50f, kPS, 0.0f } }; // Rotary Thing
+        { 0.50f, 0.25f, 0.45f, 0.50f, 0.50f, kPH, 0.0f } }; // Phaser (6-stage all-pass sweep)
     return t[juce::jlimit (0, 8, i)];
 }
 
@@ -76,6 +76,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout RingProcessor::createLayout(
     p.push_back (std::make_unique<AudioParameterBool> (ParameterID { "ub", 1 }, "Mode UB", false));
     p.push_back (std::make_unique<AudioParameterBool> (ParameterID { "lb", 1 }, "Mode LB", false));
     p.push_back (std::make_unique<AudioParameterBool> (ParameterID { "ps", 1 }, "Mode Pitch Shift", false));
+    p.push_back (std::make_unique<AudioParameterBool> (ParameterID { "ph", 1 }, "Mode Phaser", false));
     p.push_back (std::make_unique<AudioParameterInt>  (ParameterID { "preset", 1 }, "Preset", 0, 9, 0));
     p.push_back (std::make_unique<AudioParameterBool> (ParameterID { "active", 1 }, "Effect On (Bypass switch)", true));
     p.push_back (std::make_unique<AudioParameterBool> (ParameterID { "presetfsw", 1 }, "Preset/Tune Footswitch", false));
@@ -92,7 +93,8 @@ RingProcessor::RingProcessor()
     pFilter = apvts.getRawParameterValue ("filter"); pFine = apvts.getRawParameterValue ("fine");
     pCoarse = apvts.getRawParameterValue ("coarse"); pRM = apvts.getRawParameterValue ("rm");
     pUB = apvts.getRawParameterValue ("ub");         pLB = apvts.getRawParameterValue ("lb");
-    pPS = apvts.getRawParameterValue ("ps");         pActive = apvts.getRawParameterValue ("active");
+    pPS = apvts.getRawParameterValue ("ps");         pPH = apvts.getRawParameterValue ("ph");
+    pActive = apvts.getRawParameterValue ("active");
     pFsw = apvts.getRawParameterValue ("presetfsw"); pPreset = apvts.getRawParameterValue ("preset");
 
     for (int i = 0; i < 9; ++i) userPresets[i] = factoryPreset (i);
@@ -121,6 +123,9 @@ void RingProcessor::prepareToPlay (double sampleRate, int)
         c = Chan();
         for (int k = 0; k < 4; ++k) { c.p1[k].a2 = (float) (hA1[k] * hA1[k]); c.p2[k].a2 = (float) (hA2[k] * hA2[k]); }
     }
+    for (auto& row : phS) for (auto& v : row) v = 0.f;
+    phFb[0] = phFb[1] = 0.f; phLfoPhase = 0.f;
+    midiPresetDown = false; midiBypassHeld = false; prevDown = false; holdSamples = 0.0; tuning = false;
     psWin = juce::jmax (256, (int) (0.04 * sr));
     const int size = juce::nextPowerOfTwo (psWin + 16);
     for (auto& b : psBuf) b.assign ((size_t) size, 0.0f);
@@ -142,17 +147,18 @@ void RingProcessor::prepareToPlay (double sampleRate, int)
 int RingProcessor::getModes() const
 {
     return (pRM->load() > 0.5f ? kRM : 0) | (pUB->load() > 0.5f ? kUB : 0)
-         | (pLB->load() > 0.5f ? kLB : 0) | (pPS->load() > 0.5f ? kPS : 0);
+         | (pLB->load() > 0.5f ? kLB : 0) | (pPS->load() > 0.5f ? kPS : 0) | (pPH->load() > 0.5f ? kPH : 0);
 }
 
 // ------------------------------------------------------------------ MIDI
-void RingProcessor::handleMidi (juce::MidiBuffer& midi)
+bool RingProcessor::handleMidi (juce::MidiBuffer& midi)
 {
+    bool pressed = false;
     for (const auto meta : midi)
     {
         const auto m = meta.getMessage();
         const auto learn = (MidiTarget) learnTarget.load();
-        if (learn != MidiTarget::None && (m.isController() || m.isNoteOn()))
+        if (learn != MidiTarget::None && ((m.isController() && m.getControllerNumber() < 120) || m.isNoteOn()))
         {
             const int cc   = m.isController() ? m.getControllerNumber() : -1;
             const int note = m.isNoteOn() ? m.getNoteNumber() : -1;
@@ -161,20 +167,26 @@ void RingProcessor::handleMidi (juce::MidiBuffer& midi)
             learnTarget = 0;
             continue;
         }
-        if (m.isController())
+        if (m.isProgramChange())
+        {
+            pendingPreset = juce::jlimit (0, 9, m.getProgramChangeNumber());   // PC 0 = live knobs, 1-9 = presets
+            triggerAsyncUpdate();
+        }
+        else if (m.isController() && m.getControllerNumber() < 120)
         {
             const int c = m.getControllerNumber();
             const bool on = m.getControllerValue() >= 64;
-            if (c == ccPreset.load()) midiPresetDown = on;
+            if (c == ccPreset.load()) { midiPresetDown = on; if (on) pressed = true; }
             if (c == ccBypass.load())
             {
-                if (on && ! midiBypassHeld.load()) { pendingToggle = true; triggerAsyncUpdate(); }
+                const bool edge = bypassLatching.load() ? (on != midiBypassHeld.load()) : (on && ! midiBypassHeld.load());
+                if (edge) { pendingToggle = true; triggerAsyncUpdate(); }
                 midiBypassHeld = on;
             }
         }
         else if (m.isNoteOn())
         {
-            if (m.getNoteNumber() == notePreset.load()) midiPresetDown = true;
+            if (m.getNoteNumber() == notePreset.load()) { midiPresetDown = true; pressed = true; }
             if (m.getNoteNumber() == noteBypass.load()) { pendingToggle = true; triggerAsyncUpdate(); }
         }
         else if (m.isNoteOff())
@@ -182,6 +194,7 @@ void RingProcessor::handleMidi (juce::MidiBuffer& midi)
             if (m.getNoteNumber() == notePreset.load()) midiPresetDown = false;
         }
     }
+    return pressed;
 }
 
 void RingProcessor::clearMidi (MidiTarget t)
@@ -260,21 +273,26 @@ void RingProcessor::processBlock (juce::AudioBuffer<float>& buf, juce::MidiBuffe
     const int nCh = juce::jmin (buf.getNumChannels(), 2);
     for (int c = getTotalNumInputChannels(); c < getTotalNumOutputChannels(); ++c) buf.clear (c, 0, n);
 
-    handleMidi (midi);
+    const bool midiPressed = handleMidi (midi);
 
     // PRESET/TUNE footswitch: short press = next preset, hold >= 1 s = continuous tune
-    const bool down = pFsw->load() > 0.5f || midiPresetDown.load();
-    if (down)
+    // (prevDown = "switch currently held"). A tap whose press AND release land in the same audio
+    // block is still detected, because the press event itself is reported by handleMidi().
+    const bool downNow = pFsw->load() > 0.5f || midiPresetDown.load();
+    if (! prevDown && (downNow || midiPressed)) { prevDown = true; holdSamples = 0.0; tuning = false; }
+    if (prevDown)
     {
-        holdSamples += n;
-        if (! tuning.load() && holdSamples >= sr) tuning = true;
+        if (downNow)
+        {
+            holdSamples += n;
+            if (! tuning.load() && holdSamples >= sr) tuning = true;
+        }
+        else
+        {
+            if (! tuning.load()) { pendingNext = true; triggerAsyncUpdate(); }
+            prevDown = false; holdSamples = 0.0; tuning = false;
+        }
     }
-    else
-    {
-        if (prevDown && ! tuning.load()) { pendingNext = true; triggerAsyncUpdate(); }
-        holdSamples = 0.0; tuning = false;
-    }
-    prevDown = down;
 
     const bool active = pActive->load() > 0.5f;
     activeSm.setTargetValue (active ? 1.0f : 0.0f);
@@ -284,6 +302,7 @@ void RingProcessor::processBlock (juce::AudioBuffer<float>& buf, juce::MidiBuffe
     const float fine = pFine->load(), coarse = pCoarse->load();
     const int modes = getModes();
     const bool rm = (modes & kRM) != 0, ub = (modes & kUB) != 0, lb = (modes & kLB) != 0, ps = (modes & kPS) != 0;
+    const bool ph = (modes & kPH) != 0;
     const bool ssb = ub || lb, ringAny = rm || ssb;
 
     if (tunedActive.load() && (std::abs (coarse - tunedCoarse) > 1e-3f || std::abs (fine - tunedFine) > 1e-3f))
@@ -301,6 +320,10 @@ void RingProcessor::processBlock (juce::AudioBuffer<float>& buf, juce::MidiBuffe
     const bool modOn = lfoRate > 0.0f;
     psBaseSm.setTargetValue (std::round ((coarse - 0.5f) * 48.0f) + (modOn ? 0.0f : (fine - 0.5f) * 2.0f));
     depthSm.setTargetValue (modOn ? fine * 1.5f : 0.0f);
+
+    const float phRate = 0.05f * std::pow (200.0f, filter);            // 0.05 .. 10 Hz
+    const float phCenter = 200.0f * std::pow (20.0f, coarse);          // 200 Hz .. 4 kHz
+    const float phDepth = fine;                                         // 0 .. +/-2 octaves
 
     float w2 = 0.0f, w3 = 0.0f;
     if (wave < 0.5f) w2 = (0.5f - wave) * 2.0f; else w3 = (wave - 0.5f) * 2.0f;
@@ -335,6 +358,16 @@ void RingProcessor::processBlock (juce::AudioBuffer<float>& buf, juce::MidiBuffe
             const float a = twoPi * carrierPhase;
             cH = (std::cos (a) + w2 * std::cos (2.0f * a) + w3 * std::cos (3.0f * a)) * hNorm;
             sH = (std::sin (a) + w2 * std::sin (2.0f * a) + w3 * std::sin (3.0f * a)) * hNorm;
+        }
+
+        float aPh = 0.0f;
+        if (ph)
+        {
+            phLfoPhase += phRate / fs; phLfoPhase -= std::floor (phLfoPhase);
+            const float l = morphWave (phLfoPhase, phRate / fs, wave);
+            const float fc = juce::jlimit (40.0f, 0.45f * fs, phCenter * std::pow (2.0f, 2.0f * phDepth * l));
+            const float tn = std::tan (juce::MathConstants<float>::pi * fc / fs);
+            aPh = (tn - 1.0f) / (tn + 1.0f);
         }
 
         float g1 = 0.0f, g2 = 0.0f, d1 = 2.0f, d2 = 2.0f;
@@ -388,8 +421,21 @@ void RingProcessor::processBlock (juce::AudioBuffer<float>& buf, juce::MidiBuffe
                 psOut = rd (d1) * g1 + rd (d2) * g2;
             }
 
-            const int count = (ringAny ? 1 : 0) + (ps ? 1 : 0);
-            const float wet = count == 0 ? x : (ring + psOut) / std::sqrt ((float) count);
+            float phOut = 0.0f;
+            if (ph)
+            {
+                float v = x + 0.4f * phFb[c];
+                for (int k = 0; k < 6; ++k)
+                {
+                    const float y = aPh * v + phS[c][k];
+                    phS[c][k] = v - aPh * y;
+                    v = y;
+                }
+                phFb[c] = v; phOut = v;
+            }
+
+            const int count = (ringAny ? 1 : 0) + (ps ? 1 : 0) + (ph ? 1 : 0);
+            const float wet = count == 0 ? x : (ring + psOut + phOut) / std::sqrt ((float) count);
             const float processed = x * (1.0f - b) + wet * b;
             ch[c][s] = x + (processed - x) * act;
         }
@@ -434,6 +480,7 @@ void RingProcessor::applyPresetData (const PresetData& p)
     setParamValue ("fine", p.fine);    setParamValue ("coarse", p.coarse);
     setParamValue ("rm", (p.modes & kRM) ? 1.0f : 0.0f); setParamValue ("ub", (p.modes & kUB) ? 1.0f : 0.0f);
     setParamValue ("lb", (p.modes & kLB) ? 1.0f : 0.0f); setParamValue ("ps", (p.modes & kPS) ? 1.0f : 0.0f);
+    setParamValue ("ph", (p.modes & kPH) ? 1.0f : 0.0f);
     tunedCoarse = p.coarse; tunedFine = p.fine;
     tunedHz = p.tunedHz;
     tunedActive = p.tunedHz > 0.0f;
@@ -487,12 +534,13 @@ void RingProcessor::restoreAllFactory()
 
 void RingProcessor::cycleModes()
 {
-    static const int order[] = { kRM, kUB, kLB, kRM | kUB, kUB | kLB, kRM | kLB, kRM | kUB | kLB, kPS };
+    static const int order[] = { kRM, kUB, kLB, kRM | kUB, kUB | kLB, kRM | kLB, kRM | kUB | kLB, kPS, kPH };
     const int cur = getModes();
     int next = order[0];
-    for (int i = 0; i < 8; ++i) if (order[i] == cur) { next = order[(i + 1) % 8]; break; }
+    for (int i = 0; i < 9; ++i) if (order[i] == cur) { next = order[(i + 1) % 9]; break; }
     setParamValue ("rm", (next & kRM) ? 1.0f : 0.0f); setParamValue ("ub", (next & kUB) ? 1.0f : 0.0f);
     setParamValue ("lb", (next & kLB) ? 1.0f : 0.0f); setParamValue ("ps", (next & kPS) ? 1.0f : 0.0f);
+    setParamValue ("ph", (next & kPH) ? 1.0f : 0.0f);
 }
 
 juce::File RingProcessor::getPresetFile()
@@ -578,6 +626,8 @@ void RingProcessor::getStateInformation (juce::MemoryBlock& dest)
     apvts.state.setProperty ("noteBypass", noteBypass.load(), nullptr);
     apvts.state.setProperty ("tunedHz", (double) tunedHz.load(), nullptr);
     apvts.state.setProperty ("tunedActive", tunedActive.load(), nullptr);
+    apvts.state.setProperty ("uiScaleIdx", uiScaleIdx.load(), nullptr);
+    apvts.state.setProperty ("bypassLatching", bypassLatching.load(), nullptr);
     if (auto xml = apvts.copyState().createXml()) copyXmlToBinary (*xml, dest);
 }
 
@@ -595,6 +645,10 @@ void RingProcessor::setStateInformation (const void* data, int size)
             tunedActive = (bool) apvts.state.getProperty ("tunedActive", false);
             tunedCoarse = pCoarse->load(); tunedFine = pFine->load();
             currentSlot = (int) std::lround (pPreset->load());
+            uiScaleIdx = juce::jlimit (0, 3, (int) apvts.state.getProperty ("uiScaleIdx", 0));
+            bypassLatching = (bool) apvts.state.getProperty ("bypassLatching", false);
+            midiPresetDown = false; midiBypassHeld = false; tuning = false;
+            setParamValue ("presetfsw", 0.0f);                // never restore a stuck footswitch
         }
 }
 
