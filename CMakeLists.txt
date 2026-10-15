@@ -9,10 +9,9 @@ FetchContent_Declare(JUCE
 FetchContent_MakeAvailable(JUCE)
 
 # the pedal picture is embedded into the plugin (no external file needed at runtime)
-# background.png = finished pedal picture; the other PNGs are sprites cut from it (knobs rotate, LEDs / keys swap on <-> off)
+# background.png = finished pedal picture; the other PNGs are sprites cut from it (LEDs / keys swap on <-> off); knobs are drawn in code
 juce_add_binary_data(RingAssets SOURCES
   background.png
-  knob0.png knob1.png knob2.png knob3.png knob4.png
   led_on.png led_off.png
   led_preset_on.png led_preset_off.png
   led_status_on.png led_status_off.png

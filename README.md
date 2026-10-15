@@ -5,7 +5,6 @@
     PluginProcessor.h / PluginProcessor.cpp
     PluginEditor.h / PluginEditor.cpp
     background.png                (finished pedal picture, 993 x 822)
-    knob0.png ... knob4.png       (round knob sprites, rotated by the code)
     led_on.png / led_off.png      (preset ladder LEDs)
     led_preset_on/off.png, led_status_on/off.png
     key_rm_on/off.png, key_ub_on/off.png, key_lb_on/off.png   (mode keys with label + LED)
