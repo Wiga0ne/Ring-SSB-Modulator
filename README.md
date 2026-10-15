@@ -4,11 +4,9 @@
     CMakeLists.txt
     PluginProcessor.h / PluginProcessor.cpp
     PluginEditor.h / PluginEditor.cpp
-    background.png                (finished pedal picture, 993 x 822)
-    led_on.png / led_off.png      (preset ladder LEDs)
-    led_preset_on/off.png, led_status_on/off.png
-    key_rm_on/off.png, key_ub_on/off.png, key_lb_on/off.png   (mode keys with label + LED)
-    pitchshift_white.png / pitchshift_yellow.png
+    background.png
+    pitchshift_white.png
+    pitchshift_yellow.png
     .github/workflows/build.yml
 
 ## Get the .vst3

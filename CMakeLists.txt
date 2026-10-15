@@ -9,16 +9,7 @@ FetchContent_Declare(JUCE
 FetchContent_MakeAvailable(JUCE)
 
 # the pedal picture is embedded into the plugin (no external file needed at runtime)
-# background.png = finished pedal picture; the other PNGs are sprites cut from it (LEDs / keys swap on <-> off); knobs are drawn in code
-juce_add_binary_data(RingAssets SOURCES
-  background.png
-  led_on.png led_off.png
-  led_preset_on.png led_preset_off.png
-  led_status_on.png led_status_off.png
-  key_rm_on.png key_rm_off.png
-  key_ub_on.png key_ub_off.png
-  key_lb_on.png key_lb_off.png
-  pitchshift_white.png pitchshift_yellow.png)
+juce_add_binary_data(RingAssets SOURCES background.png pitchshift_white.png pitchshift_yellow.png)
 
 juce_add_plugin(RingThingSSB
   COMPANY_NAME "Wiga"
