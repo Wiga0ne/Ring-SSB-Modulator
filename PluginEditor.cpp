@@ -10,7 +10,8 @@ namespace
     constexpr float kBigX = 892.0f, kBigY = 179.0f;
     constexpr float kLadderX = 657.0f, kLadderY0 = 309.0f, kLadderDY = 34.5f;
     const juce::Colour kOrange (0xffff9a1a), kRed (0xffff2a2a), kBtnOrange (0xfff95527), kYellow (0xffffd600);
-    const float kScales[4] = { 0.25f, 0.5f, 0.75f, 1.0f };
+    const float kScales[3] = { 0.5f, 0.75f, 1.0f };
+    constexpr float kDefaultScale = 0.6f;
 
     void drawLed (juce::Graphics& g, float cx, float cy, float r, bool lit, juce::Colour c)
     {
@@ -158,6 +159,7 @@ private:
         m.addSeparator();
         m.addItem (4, "Unload preset (live knob positions)", slot > 0);
         m.addItem (5, "Next mode combination (same as pushing the knob)");
+        m.addItem (6, "Load the factory Phaser sound (keeps your 9 presets untouched)");
         addSizeSubmenu (m, *this);
         juce::Component::SafePointer<BigKnob> sp (this);
         m.showMenuAsync (juce::PopupMenu::Options(), [sp] (int r) {
@@ -168,6 +170,7 @@ private:
             else if (r == 3) p.restoreAllFactory();
             else if (r == 4) p.loadPreset (0);
             else if (r == 5) p.cycleModes();
+            else if (r == 6) p.loadFactorySound (9);
             else handleSizeChoice (r, sp.getComponent());
         });
     }
@@ -446,9 +449,9 @@ RingEditor::RingEditor (RingProcessor& p) : AudioProcessorEditor (&p), proc (p)
     content = std::make_unique<PedalContent> (proc);
     addAndMakeVisible (*content);
     setResizable (true, true);
-    setResizeLimits (kW / 4, kH / 4, 1500, 1242);
+    setResizeLimits (kW / 2, kH / 2, 1500, 1242);
     getConstrainer()->setFixedAspectRatio ((double) kW / (double) kH);
-    setScaleIndex (juce::jlimit (0, 3, proc.uiScaleIdx.load()));   // default: smallest size (25 %)
+    setScaleIndex (juce::jlimit (-1, 2, proc.uiScaleIdx.load()));   // default: 60 %
 }
 
 RingEditor::~RingEditor() = default;
@@ -463,31 +466,32 @@ void RingEditor::resized()
 int RingEditor::getScaleIndex() const
 {
     const float s = (float) getWidth() / (float) kW;
-    for (int i = 0; i < 4; ++i) if (std::abs (s - kScales[i]) < 0.02f) return i;
+    for (int i = 0; i < 3; ++i) if (std::abs (s - kScales[i]) < 0.02f) return i;
     return -1;
 }
 
 void RingEditor::setScaleIndex (int idx)
 {
-    idx = juce::jlimit (0, 3, idx);
+    idx = juce::jlimit (-1, 2, idx);
     proc.uiScaleIdx = idx;
-    setSize ((int) std::lround (kW * kScales[idx]), (int) std::lround (kH * kScales[idx]));
+    const float s = idx < 0 ? kDefaultScale : kScales[idx];
+    setSize ((int) std::lround (kW * s), (int) std::lround (kH * s));
 }
 
 static void addSizeSubmenu (juce::PopupMenu& m, juce::Component& c)
 {
     const auto* ed = c.findParentComponentOfClass<RingEditor>();
     const int cur = ed != nullptr ? ed->getScaleIndex() : -1;
-    const char* names[4] = { "25 %", "50 %", "75 %", "100 %" };
+    const char* names[3] = { "50 %", "75 %", "100 %" };
     juce::PopupMenu sub;
-    for (int i = 0; i < 4; ++i) sub.addItem (101 + i, names[i], true, i == cur);
+    for (int i = 0; i < 3; ++i) sub.addItem (101 + i, names[i], true, i == cur);
     m.addSeparator();
     m.addSubMenu ("Plugin size", sub);
 }
 
 static void handleSizeChoice (int r, juce::Component* c)
 {
-    if (c == nullptr || r < 101 || r > 104) return;
+    if (c == nullptr || r < 101 || r > 103) return;
     if (auto* ed = c->findParentComponentOfClass<RingEditor>()) ed->setScaleIndex (r - 101);
 }
 
@@ -495,10 +499,10 @@ static void showSizeMenuFor (juce::Component& c)
 {
     const auto* ed = c.findParentComponentOfClass<RingEditor>();
     const int cur = ed != nullptr ? ed->getScaleIndex() : -1;
-    const char* names[4] = { "25 %", "50 %", "75 %", "100 %" };
+    const char* names[3] = { "50 %", "75 %", "100 %" };
     juce::PopupMenu m;
     m.addSectionHeader ("Plugin size");
-    for (int i = 0; i < 4; ++i) m.addItem (101 + i, names[i], true, i == cur);
+    for (int i = 0; i < 3; ++i) m.addItem (101 + i, names[i], true, i == cur);
     juce::Component::SafePointer<juce::Component> sp (&c);
     m.showMenuAsync (juce::PopupMenu::Options(), [sp] (int r) { handleSizeChoice (r, sp.getComponent()); });
 }

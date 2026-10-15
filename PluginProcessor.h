@@ -34,20 +34,21 @@ public:
     double getTailLengthSeconds() const override { return 0.0; }
 
     // Host-visible factory programs (the preset menu of the DAW)
-    int getNumPrograms() override { return 9; }
+    int getNumPrograms() override { return 10; }      // 9 preset slots + the factory Phaser sound
     int getCurrentProgram() override { return currentProgram; }
     void setCurrentProgram (int index) override;
-    const juce::String getProgramName (int index) override { return factoryNames[juce::jlimit (0, 8, index)]; }
+    const juce::String getProgramName (int index) override { return factoryNames[juce::jlimit (0, 9, index)]; }
     void changeProgramName (int, const juce::String&) override {}
 
     void getStateInformation (juce::MemoryBlock&) override;
     void setStateInformation (const void*, int) override;
 
     // ---- presets ----
-    static const char* const factoryNames[9];
-    static PresetData factoryPreset (int index0to8);
+    static const char* const factoryNames[10];
+    static PresetData factoryPreset (int index0to9);   // 0-8 = preset slots 1-9, 9 = Phaser
     int  getCurrentSlot() const { return currentSlot; }
     void loadPreset (int slot0to9);          // 0 = unload (live knobs)
+    void loadFactorySound (int index0to9);   // applies a factory sound without touching the 9 user slots
     void saveUserPreset (int slot1to9);
     void restoreFactoryPreset (int slot1to9);
     void restoreAllFactory();
@@ -65,7 +66,7 @@ public:
     void cancelMidiLearn() { learnTarget = 0; }
     bool isBypassLatching() const { return bypassLatching.load(); }
     void setBypassLatching (bool b) { bypassLatching = b; }
-    std::atomic<int> uiScaleIdx { 0 };
+    std::atomic<int> uiScaleIdx { -1 };       // -1 = default size (60 %), 0..2 = 50 / 75 / 100 %
     MidiTarget getLearnTarget() const { return (MidiTarget) learnTarget.load(); }
     void clearMidi (MidiTarget t);
     juce::String getMidiDescription (MidiTarget t) const;
@@ -124,6 +125,7 @@ private:
     std::atomic<bool> pendingNext { false }, pendingToggle { false };
     std::atomic<int> pendingPreset { -1 }, pendingProgram { -1 };
     int currentSlot = 0, currentProgram = 0;
+    juce::uint32 programLockStart = 0;
     PresetData userPresets[9];
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (RingProcessor)

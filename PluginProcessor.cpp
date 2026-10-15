@@ -41,13 +41,13 @@ namespace
     }
 }
 
-const char* const RingProcessor::factoryNames[9] = {
-    "Ring Mod", "Tremolo", "Ring Vibe", "Detune", "Chorus", "Vibrato", "Sub Octave", "Octave Up", "Phaser" };
+const char* const RingProcessor::factoryNames[10] = {
+    "Ring Mod", "Tremolo", "Ring Vibe", "Detune", "Chorus", "Vibrato", "Sub Octave", "Octave Up", "Rotary Thing", "Phaser" };
 
 PresetData RingProcessor::factoryPreset (int i)
 {
     //                       blend  wave   filter fine   coarse modes
-    static const PresetData t[9] = {
+    static const PresetData t[10] = {
         { 0.60f, 0.25f, 0.80f, 0.50f, 0.80f, kRM, 0.0f },   // Ring Mod
         { 0.50f, 0.25f, 1.00f, 0.50f, 0.38f, kRM, 0.0f },   // Tremolo
         { 0.50f, 0.50f, 1.00f, 0.50f, 0.35f, kLB, 0.0f },   // Ring Vibe
@@ -56,8 +56,9 @@ PresetData RingProcessor::factoryPreset (int i)
         { 1.00f, 0.25f, 0.50f, 0.25f, 0.50f, kPS, 0.0f },   // Vibrato
         { 0.60f, 0.25f, 0.00f, 0.50f, 0.25f, kPS, 0.0f },   // Sub Octave (-12 st)
         { 0.50f, 0.25f, 0.00f, 0.50f, 0.75f, kPS, 0.0f },   // Octave Up (+12 st)
-        { 0.50f, 0.25f, 0.45f, 0.50f, 0.50f, kPH, 0.0f } }; // Phaser (6-stage all-pass sweep)
-    return t[juce::jlimit (0, 8, i)];
+        { 0.70f, 0.25f, 0.50f, 0.35f, 0.50f, kPS, 0.0f },   // Rotary Thing
+        { 0.50f, 0.25f, 0.45f, 0.50f, 0.50f, kPH, 0.0f } }; // Phaser (6-stage all-pass sweep) - host program 10
+    return t[juce::jlimit (0, 9, i)];
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout RingProcessor::createLayout()
@@ -97,6 +98,7 @@ RingProcessor::RingProcessor()
     pActive = apvts.getRawParameterValue ("active");
     pFsw = apvts.getRawParameterValue ("presetfsw"); pPreset = apvts.getRawParameterValue ("preset");
 
+    programLockStart = juce::Time::getMillisecondCounter();
     for (int i = 0; i < 9; ++i) userPresets[i] = factoryPreset (i);
     loadUserPresetsFromDisk();
     apvts.addParameterListener ("preset", this);
@@ -593,7 +595,17 @@ void RingProcessor::parameterChanged (const juce::String& id, float v)
 
 void RingProcessor::setCurrentProgram (int index)
 {
-    if (index < 0 || index > 8) return;
+    if (index < 0 || index > 9) return;
+    // some hosts re-send a program number while a project is being restored: never let that overwrite the saved sound
+    if (juce::Time::getMillisecondCounter() - programLockStart < 2500) return;
+    currentProgram = index;
+    pendingProgram = index;
+    triggerAsyncUpdate();
+}
+
+void RingProcessor::loadFactorySound (int index)
+{
+    if (index < 0 || index > 9) return;
     currentProgram = index;
     pendingProgram = index;
     triggerAsyncUpdate();
@@ -645,7 +657,8 @@ void RingProcessor::setStateInformation (const void* data, int size)
             tunedActive = (bool) apvts.state.getProperty ("tunedActive", false);
             tunedCoarse = pCoarse->load(); tunedFine = pFine->load();
             currentSlot = (int) std::lround (pPreset->load());
-            uiScaleIdx = juce::jlimit (0, 3, (int) apvts.state.getProperty ("uiScaleIdx", 0));
+            programLockStart = juce::Time::getMillisecondCounter();
+            uiScaleIdx = juce::jlimit (-1, 2, (int) apvts.state.getProperty ("uiScaleIdx", -1));
             bypassLatching = (bool) apvts.state.getProperty ("bypassLatching", false);
             midiPresetDown = false; midiBypassHeld = false; tuning = false;
             setParamValue ("presetfsw", 0.0f);                // never restore a stuck footswitch
